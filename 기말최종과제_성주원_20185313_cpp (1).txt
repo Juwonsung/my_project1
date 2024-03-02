@@ -1,0 +1,377 @@
+/*******************************************************************************
+* Copyright 2016 ROBOTIS CO., LTD.
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*******************************************************************************/
+
+/* Authors: Taehun Lim (Darby) */
+
+#include "../include/final_prj/turtlebot3_drive.h"
+#include <unistd.h>
+#include <termios.h>
+
+Turtlebot3Drive::Turtlebot3Drive()
+  : nh_priv_("~")
+{
+  //Init gazebo ros turtlebot3 node
+  ROS_INFO("TurtleBot3 Simulation Node Init");
+  bool ret = init();
+  ROS_ASSERT(ret);
+}
+
+Turtlebot3Drive::~Turtlebot3Drive()
+{
+  updatecommandVelocity(0.0, 0.0);
+  ros::shutdown();
+}
+
+/*******************************************************************************
+* Init function
+*******************************************************************************/
+bool Turtlebot3Drive::init()
+{
+     t0 = ros::Time::now().toSec();
+  // initialize ROS parameter
+  std::string cmd_vel_topic_name = nh_.param<std::string>("cmd_vel_topic_name", "");
+  turtlebot3_state_num =0;
+  // initialize variables
+  escape_range_       = 22.5 * DEG2RAD;
+  check_forward_dist_ = 0.7;
+  check_side_dist_    = 0.6;
+//parking
+  // parking variable
+  current_x_ = 0.0;
+  current_y_ = 0.0;
+  pre_x_ =0.0;
+  pre_y_ =0.0;
+  flag = 1;
+  tb3_pose_ = 0.0;
+  prev_tb3_pose_ = 0.0;
+  first_x_ =0.0;
+  first_y_ =0.0;
+  pre_distance =0.0 ;
+  current_distance = 0.0;
+  flag2 =0;
+  // ////
+   first_pos =0.0 ;
+
+  // initialize publishers
+  cmd_vel_pub_   = nh_.advertise<geometry_msgs::Twist>(cmd_vel_topic_name, 10);
+
+  // initialize subscribers
+  laser_scan_sub_  = nh_.subscribe("scan", 10, &Turtlebot3Drive::laserScanMsgCallBack, this);
+  odom_sub_ = nh_.subscribe("odom", 10, &Turtlebot3Drive::odomMsgCallBack, this);
+
+  return true;
+}
+
+void Turtlebot3Drive::odomMsgCallBack(const nav_msgs::Odometry::ConstPtr &msg)
+{
+  double siny = 2.0 * (msg->pose.pose.orientation.w * msg->pose.pose.orientation.z + msg->pose.pose.orientation.x * msg->pose.pose.orientation.y);
+  double cosy = 1.0 - 2.0 * (msg->pose.pose.orientation.y * msg->pose.pose.orientation.y + msg->pose.pose.orientation.z * msg->pose.pose.orientation.z);
+  current_x_ = msg -> pose.pose.position.x;
+  current_y_ = msg -> pose.pose.position.y;
+  tb3_pose_ = atan2(siny, cosy);
+}
+
+void Turtlebot3Drive::laserScanMsgCallBack(const sensor_msgs::LaserScan::ConstPtr &msg)
+{
+  uint16_t scan_angle[11] = {0, 90, 270, 285, 300, 315, 330 , 170, 190, 260 , 280 };
+
+  for (int num = 0; num < 3; num++)
+  {
+    if (std::isinf(msg->ranges.at(scan_angle[num])))
+    {
+      scan_data_[num] = msg->range_max;
+    }
+    else
+    {
+      scan_data_[num] = msg->ranges.at(scan_angle[num]);
+    }
+  }
+}
+
+void Turtlebot3Drive::updatecommandVelocity(double linear, double angular)
+{
+  geometry_msgs::Twist cmd_vel;
+
+  cmd_vel.linear.x  = linear;
+  cmd_vel.angular.z = angular;
+
+  cmd_vel_pub_.publish(cmd_vel);
+}
+
+/*******************************************************************************
+* Control Loop function
+*******************************************************************************/
+
+double getDistance(double x1, double y1, double x2, double y2)
+{
+  return sqrt(pow((x2-x1),2) + pow((y2-y1),2));
+}
+
+bool Turtlebot3Drive::controlLoop()
+{
+
+    // parking stop condition  //////////////
+        if (flag ==1){
+            first_x_ = current_x_;
+            first_y_ = current_y_;
+            first_pos = tb3_pose_;
+
+            if(first_x_ != 0.0){
+                flag =0;
+            }
+        }
+
+        // calculate distance
+        // when over 1 , we will caculate
+        if(getDistance(first_x_, first_y_ ,current_x_ , current_y_) > 1){
+             ROS_INFO("Stop my bro!1");
+            flag2 = 1;
+        }
+
+        if(flag2){
+            current_distance = getDistance(first_x_, first_y_ ,current_x_ , current_y_);
+             ROS_INFO("Stop my bro!2");
+            //if(pre_distance > current_distance){
+
+                if (getDistance(first_x_, first_y_ ,current_x_ , current_y_) <= 0.2)
+                {
+                ROS_INFO("Stop my bro!3");
+                 turtlebot3_state_num = TB3_DRIVE_STOP; // Q,How to use Well in this code?
+                flag2 =0 ;
+                }
+
+                 }
+        if(current_x_>pre_x_){
+            if(current_x_>max_x)
+                max_x=current_x_;
+        }
+        else{
+            if(pre_x_>max_x)
+                max_x=pre_x_;
+        }
+
+        if(current_y_>pre_y_){
+            if(current_y_>max_y)
+            max_y=current_y_;
+        }
+        else{
+            if(pre_y_>max_y)
+            max_y=pre_y_;
+        }
+
+       // ROS_INFO("Max_x :%f",max_x);
+            //ROS_INFO("Max_y :%f",max_y);
+  //ROS_INFO("Distance: %f",current_distance);
+    //ROS_INFO("CENTER : %f",scan_data_[CENTER]);
+    //ROS_INFO("RIGHT : %f",scan_data_[RIGHT]);
+    //ROS_INFO("LEFT : %f",scan_data_[LEFT]);
+   // ROS_INFO("Theta : %f", tb3_pose_);
+
+
+  switch(turtlebot3_state_num)
+  {
+
+
+    case GET_TB3_DIRECTION:
+
+      if(scan_data_[RIGHT] < 0.4){
+          turtlebot3_state_num = TB3_DRIVE_FORWARD;
+          if(scan_data_[CENTER] <= 0.3){
+            prev_tb3_pose_ = tb3_pose_;
+              turtlebot3_state_num = TB3_LEFT_TURN;
+            if(scan_data_[RIGHT] < scan_data_[CENTER]){
+                turtlebot3_state_num =TB3_DRIVE_FORWARD;
+                if(scan_data_[RIGHT] > 0.07){
+                    turtlebot3_state_num = TB3_LEFT_TURN;
+                }
+                //upgrade !!
+                else if(scan_data_[RIGHT315] > 0.07){
+                    turtlebot3_state_num = TB3_LEFT_TURN;
+                }
+                else if(scan_data_[RIGHT300] > 0.07){
+                    turtlebot3_state_num = TB3_LEFT_TURN;
+                }
+                else if(scan_data_[RIGHT285] > 0.07){
+                    turtlebot3_state_num = TB3_LEFT_TURN;
+                }
+                else if(scan_data_[RIGHT330] > 0.07){
+                    turtlebot3_state_num = TB3_LEFT_TURN;
+                }
+            }
+          }
+      }
+
+      //spcial event
+      if (scan_data_[CENTER]>0.4 && scan_data_[RIGHT]>0.4)
+      {
+        prev_tb3_pose_ = tb3_pose_;
+        turtlebot3_state_num = TB3_RIGHT_TURN;
+      }
+      distance+=getDistance(current_x_,current_y_,pre_x_,pre_y_);
+            break;
+      break;
+
+    case TB3_DRIVE_FORWARD:
+      updatecommandVelocity(LINEAR_VELOCITY, 0.0);
+      turtlebot3_state_num = GET_TB3_DIRECTION;
+      break;
+
+
+
+    case TB3_RIGHT_TURN:
+      if (fabs(prev_tb3_pose_ - tb3_pose_) >= escape_range_)
+        turtlebot3_state_num = GET_TB3_DIRECTION;
+      else
+        updatecommandVelocity(0.0, -1 * ANGULAR_VELOCITY);
+      break;
+
+    case TB3_LEFT_TURN:
+      if (fabs(prev_tb3_pose_ - tb3_pose_) >= escape_range_)
+        turtlebot3_state_num = GET_TB3_DIRECTION;
+      else
+        updatecommandVelocity(0.0, ANGULAR_VELOCITY);
+      break;
+
+  case TB3_DRIVE_STOP:
+      ROS_INFO("GO TO PARKING");
+      updatecommandVelocity(0.0, 0.0);
+      turtlebot3_state_num = PARKING;
+      //how to make the first theta ?
+     // if(tb3_pose_ - first_pos >= 45 )
+         // updatecommandVelocity(LINEAR_VELOCITY, 0.0);
+    break;
+
+    case PARKING:
+      ROS_INFO("PARKING");
+      if (tb3_pose_-first_pos >= 30*DEG2RAD)
+        {
+          turtlebot3_state_num = TB3_DRIVE_FORWARD_PARKING;
+        ROS_INFO("GO to new state");
+      }
+      else
+      {
+        updatecommandVelocity(0.0, ANGULAR_VELOCITY);
+        ROS_INFO("ANGULAR");
+      }
+      break;
+
+  case TB3_DRIVE_FORWARD_PARKING:
+      ROS_INFO("TB3_DRIVE_FORWARD_PARKING");
+    updatecommandVelocity(LINEAR_VELOCITY, 0.0);
+    if(scan_data_[CENTER] < 0.1){
+        updatecommandVelocity(0.0, 0.0);
+        }
+    break;
+    // if you want to move goal .. use this code
+    /*turtlebot3_state_num=TB3_MOVE_GOAL;
+    break;*/
+  case TB3_MOVE_GOAL:
+   {
+        ROS_INFO("MOVE_GOAL");
+       double cur_dis=getDistance(first_x_,first_y_,max_x/2,max_y/2);
+   double cur_angle=atan2(max_y/2-first_y_,max_x/2-first_x_);
+   if(cur_dis>=distance_tolerance)
+           turtlebot3_state_num=GET_TB3_DIRECTION;
+         else
+           updatecommandVelocity(1.5*cur_dis,4*cur_angle);
+
+         break;
+   }
+
+    default:
+      turtlebot3_state_num = GET_TB3_DIRECTION;
+      break;
+  }
+ t1 = ros::Time::now().toSec();
+ ROS_INFO("time : %f ", t1-t0);
+ ROS_INFO("distance :%f",distance);
+  return true;
+}
+
+/*******************************************************************************
+* Main function
+*******************************************************************************/
+
+char getch()
+{
+    fd_set set;
+    struct timeval timeout;
+    int rv;
+    char buff = 0;
+    int len = 1;
+    int filedesc = 0;
+    FD_ZERO(&set);
+    FD_SET(filedesc, &set);
+
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 100;
+
+    rv = select(filedesc + 1, &set, NULL, NULL, &timeout);
+
+    struct termios old = {0};
+    if (tcgetattr(filedesc, &old) < 0)
+        ROS_ERROR("tcsetattr()");
+    old.c_lflag &= ~ICANON;
+    old.c_lflag &= ~ECHO;
+    old.c_cc[VMIN] = 1;
+    old.c_cc[VTIME] = 0;
+    if (tcsetattr(filedesc, TCSANOW, &old) < 0)
+        ROS_ERROR("tcsetattr ICANON");
+
+    if(rv == -1)
+        ROS_ERROR("select");
+    else if(rv == 0)
+        ROS_INFO("no_key_pressed");
+    else
+        read(filedesc, &buff, len );
+
+    old.c_lflag |= ICANON;
+    old.c_lflag |= ECHO;
+    if (tcsetattr(filedesc, TCSADRAIN, &old) < 0)
+        ROS_ERROR ("tcsetattr ~ICANON");
+    return (buff);
+}
+
+int main(int argc, char* argv[])
+{
+  ros::init(argc, argv, "turtlebot3_drive");
+  Turtlebot3Drive turtlebot3_drive;
+
+  ros::Rate loop_rate(125);
+
+  int ch;
+  bool bSelect = true;
+
+  while(bSelect)
+  {
+    ch = getch();
+    ROS_INFO("%c", ch);
+    if(ch == 's')
+    {
+      turtlebot3_drive.updatecommandVelocity(0.0, 0.0);
+      bSelect = false;
+    }
+    else
+    {
+      turtlebot3_drive.controlLoop();
+    }
+    ros::spinOnce();
+    loop_rate.sleep();
+  }
+
+
+  return 0;
+}
